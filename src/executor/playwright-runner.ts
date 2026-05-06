@@ -1,4 +1,4 @@
-import type { OperationFlow, FlowStep } from '../recorder/types';
+import type { OperationFlow, FlowStep } from '../types';
 
 export interface ExecutionOptions {
   headless?: boolean;

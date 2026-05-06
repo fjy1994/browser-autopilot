@@ -1,4 +1,4 @@
-import type { OperationSession, OperationFlow } from '../recorder/types';
+import type { OperationSession, OperationFlow } from '../types';
 
 const DB_NAME = 'autopilot-db';
 const DB_VERSION = 1;

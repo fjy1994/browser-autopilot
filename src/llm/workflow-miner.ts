@@ -1,4 +1,4 @@
-import type { Operation } from '../recorder/types';
+import type { Operation } from '../types';
 
 /**
  * 工作流挖掘器 - 仅保留使用中的工具方法

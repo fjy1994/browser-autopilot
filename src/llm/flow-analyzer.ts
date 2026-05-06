@@ -1,4 +1,4 @@
-import type { Operation, OperationFlow } from '../recorder/types';
+import type { Operation, OperationFlow } from '../types';
 import { FLOW_MATCH_PROMPT, FLOW_ANALYSIS_PROMPT } from './prompts';
 
 export interface AnalysisOptions {
