@@ -30,8 +30,15 @@ export function useWorkflowMining(deps: WorkflowMiningDeps) {
 
   // 🚀 一键智能挖掘 - 从所有会话中自动提取所有工作流
   const mineAllWorkflows = async () => {
-    if (sessions.length === 0) {
-      alert('没有可分析的会话数据！请先录制一些操作。');
+    // 只分析未被挖掘过的会话
+    const unminedSessions = sessions.filter((s: any) => !s.hasBeenMined);
+    
+    if (unminedSessions.length === 0) {
+      if (sessions.length === 0) {
+        alert('没有可分析的会话数据！请先录制一些操作。');
+      } else {
+        alert('所有会话都已经分析过了，没有新数据需要处理。');
+      }
       return;
     }
 
@@ -57,7 +64,7 @@ export function useWorkflowMining(deps: WorkflowMiningDeps) {
       setMiningProgress((prev: any) => prev ? { ...prev, currentStep: '收集操作数据...' } : null);
       
       let allOperations: any[] = [];
-      for (const session of sessions) {
+      for (const session of unminedSessions) {
         allOperations.push(...session.operations);
       }
       
@@ -85,6 +92,7 @@ export function useWorkflowMining(deps: WorkflowMiningDeps) {
 
       // 2. 逐个用 LLM 分析（绝不降级！）
       finalFlows = [];
+      let meaninglessCount = 0; // 无意义事务计数
       for (let i = 0; i < splitSessions.length; i++) {
         const sessionOps = splitSessions[i];
         setMiningProgress((prev: any) => prev ? {
@@ -92,7 +100,19 @@ export function useWorkflowMining(deps: WorkflowMiningDeps) {
           currentStep: `🤖 分析第 ${i + 1}/${splitSessions.length} 个任务...`,
         } : null);
         
-        const flow = await analyzer.analyzeOperations(sessionOps, { taskDescription: '提取核心工作流' });
+        const flow = await analyzer.analyzeOperations(sessionOps);
+        
+        // 🔥 关键判断：无意义事务不保存！
+        const flowAny = flow as any;
+        const isMeaningless = flowAny.analysis?.isMeaningful === false 
+          || flow.steps.length === 0;
+        
+        if (isMeaningless) {
+          meaninglessCount++;
+          console.log(`⚠️ 跳过无意义事务: ${flowAny.analysis?.reason || '无有效步骤'}`);
+          continue;
+        }
+        
         flow.isAutoMined = true;
         flow.description += '\n\n💡 使用 LLM 智能分析生成';
         finalFlows.push(flow);
@@ -103,12 +123,19 @@ export function useWorkflowMining(deps: WorkflowMiningDeps) {
         filteredCount: filtered,
         sessionCount,
         flowCount: finalFlows.length,
-        currentStep: '保存工作流...',
+        meaninglessCount, // 无意义事务数
+        currentStep: '保存事务...',
       } : null);
 
-      // 保存所有挖掘出的工作流
+      // 保存所有挖掘出的事务
       for (const flow of finalFlows) {
         await flowDb.saveFlow(flow);
+      }
+
+      // 标记这些会话为已挖掘，避免重复分析
+      for (const session of unminedSessions) {
+        (session as any).hasBeenMined = true;
+        await flowDb.saveSession(session);
       }
 
       // 刷新数据
@@ -127,8 +154,9 @@ export function useWorkflowMining(deps: WorkflowMiningDeps) {
           `  • 原始操作数: ${allOperations.length}\n` +
           `  • 过滤噪音: ${filtered}\n` +
           `  • 识别任务数: ${sessionCount}\n` +
-          `  • 提取工作流: ${finalFlows.length}\n\n` +
-          `已自动保存到 Flows 列表中！`
+          `  • 无意义事务: ${meaninglessCount} (已自动跳过)\n` +
+          `  • 提取有意义事务: ${finalFlows.length}\n\n` +
+          `已自动保存到事务列表中！`
         );
         setIsMining(false);
         setMiningProgress(null);

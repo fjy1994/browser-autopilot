@@ -1,6 +1,6 @@
 import type { OperationSession, OperationFlow } from '../types';
 
-const DB_NAME = 'autopilot-db';
+const DB_NAME = 'AutopilotDB';
 const DB_VERSION = 1;
 
 export class FlowDatabase {
@@ -29,7 +29,6 @@ export class FlowDatabase {
         if (!db.objectStoreNames.contains('flows')) {
           const flowStore = db.createObjectStore('flows', { keyPath: 'id' });
           flowStore.createIndex('createdAt', 'createdAt', { unique: false });
-          flowStore.createIndex('tags', 'tags', { unique: false, multiEntry: true });
         }
 
         // 设置存储
@@ -148,16 +147,6 @@ export class FlowDatabase {
       };
       request.onerror = () => reject(request.error);
     });
-  }
-
-  async searchFlows(query: string): Promise<OperationFlow[]> {
-    const flows = await this.getAllFlows();
-    const queryLower = query.toLowerCase();
-    return flows.filter(flow =>
-      flow.name.toLowerCase().includes(queryLower) ||
-      flow.description.toLowerCase().includes(queryLower) ||
-      flow.tags.some(tag => tag.toLowerCase().includes(queryLower))
-    );
   }
 
   async deleteFlow(id: string): Promise<void> {

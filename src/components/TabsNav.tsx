@@ -7,9 +7,9 @@ interface TabsNavProps {
 
 export function TabsNav({ activeTab, setActiveTab }: TabsNavProps) {
   const tabs: { key: TabType; label: string }[] = [
-    { key: 'flows', label: '⚡ Flows' },
-    { key: 'execute', label: '🚀 Execute' },
-    { key: 'settings', label: '⚙️ Settings' },
+    { key: 'flows', label: '⚡ 事务' },
+    { key: 'execute', label: '🚀 执行' },
+    { key: 'settings', label: '⚙️ 设置' },
   ];
 
   return (

@@ -11,7 +11,7 @@ export function FlowsTab({ flows, selectedFlow, onSelectFlow, onDeleteFlow }: Fl
   return (
     <div>
       <h2 style={{ fontSize: 16, marginBottom: 16, color: '#888' }}>
-        Saved Flows ({flows.length})
+        已保存的事务 ({flows.length})
       </h2>
       
       {flows.length === 0 ? (
@@ -22,7 +22,7 @@ export function FlowsTab({ flows, selectedFlow, onSelectFlow, onDeleteFlow }: Fl
           borderRadius: 12,
           color: '#666',
         }}>
-          No flows yet. Analyze a session to create a flow!
+          暂无事务。录制并分析会话来创建事务！
         </div>
       ) : (
         flows.map(flow => (
@@ -61,7 +61,7 @@ export function FlowsTab({ flows, selectedFlow, onSelectFlow, onDeleteFlow }: Fl
             </div>
             {flow.isAutoMined && (
               <div style={{ fontSize: 11, color: '#8b5cf6', marginBottom: 8 }}>
-                🤖 Auto-mined
+                🤖 自动生成
               </div>
             )}
             <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -81,7 +81,7 @@ export function FlowsTab({ flows, selectedFlow, onSelectFlow, onDeleteFlow }: Fl
                   fontSize: 12,
                 }}
               >
-                🗑️ Delete
+                🗑️ 删除
               </button>
             </div>
           </div>

@@ -102,6 +102,7 @@ export interface OperationFlow {
   tags: string[];
   createdAt: number;
   updatedAt: number;
+  code?: string;            // 预留字段（暂未使用）
   qualityScore?: number;    // 质量评分 0-100
   useCount?: number;        // 执行次数
   isAutoMined?: boolean;    // 是否自动挖掘生成
@@ -112,7 +113,6 @@ export interface FlowStep {
   action: string;
   description: string;
   target?: DomTarget;
-  value?: string;
-  key?: string;       // 按键值（仅 action === 'keydown' 时有值，如 'Enter'、'Tab'）
-  conditions?: string[];
+  value?: string;        // input = 输入文本, keydown = 按键名
+  waitTimeout?: number;  // 等待元素出现的最大超时时间（毫秒）
 }

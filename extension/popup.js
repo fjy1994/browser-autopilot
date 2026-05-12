@@ -126,7 +126,12 @@ async function loadState() {
     renderSessions();
   } catch (e) {
     console.error('[Popup] Load state failed:', e);
-    statusText.textContent = 'Error! Refresh extension';
+    // 如果出错，默认显示录制中（向后兼容）
+    state.isRecording = true;
+    state.operationCount = 0;
+    state.sessions = [];
+    updateUI();
+    renderSessions();
   }
 }
 
@@ -155,6 +160,10 @@ dashboardBtn.addEventListener('click', () => {
 
 // 初始化 - 确保 DOM 加载完成后延迟执行
 document.addEventListener('DOMContentLoaded', () => {
+  // 先显示加载状态
+  statusText.textContent = 'Loading...';
+  toggleBtn.textContent = '...';
+  
   // 延迟执行，给 background 唤醒时间
   setTimeout(loadState, 200);
 });

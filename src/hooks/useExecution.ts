@@ -1,6 +1,24 @@
+import { useState } from 'react';
 import { FlowAnalyzer } from '../llm/flow-analyzer';
-import { CODE_GENERATION_PROMPT } from '../llm/prompts';
 import type { OperationFlow } from '../types';
+
+export interface ExecutionStepState {
+  id: string;
+  index: number;
+  status: 'pending' | 'running' | 'success' | 'failed';
+  action: string;
+  selector: string;
+  description: string;
+  value?: string;
+  error?: string;
+}
+
+// 失败分析结果
+export interface FailureAnalysis {
+  loading: boolean;
+  result?: any;
+  error?: string;
+}
 
 interface ExecutionDeps {
   apiKey: string;
@@ -9,13 +27,8 @@ interface ExecutionDeps {
   executeQuery: string;
   flows: OperationFlow[];
   selectedFlow: OperationFlow | null;
-  executionResult: any;
-  generatedCode: string;
   setSelectedFlow: (flow: OperationFlow | null) => void;
-  setGeneratedCode: (code: string) => void;
   setExecutionResult: (result: any) => void;
-  setIsExecuting: (val: boolean) => void;
-  setExecutionProgress: (progress: any) => void;
 }
 
 export function useExecution(deps: ExecutionDeps) {
@@ -25,294 +38,349 @@ export function useExecution(deps: ExecutionDeps) {
     apiModel,
     executeQuery,
     flows,
-    selectedFlow,
-    executionResult,
     setSelectedFlow,
-    setGeneratedCode,
     setExecutionResult,
-    setIsExecuting,
-    setExecutionProgress,
   } = deps;
 
-  // 执行自然语言查询 - LLM 智能选择 Skill
+  // 🚀 分步执行状态
+  const [executionSteps, setExecutionSteps] = useState<ExecutionStepState[]>([]);
+  const [currentStepIndex, setCurrentStepIndex] = useState(-1);
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionTabId, setExecutionTabId] = useState<number | null>(null);
+  
+  // 🧠 失败分析状态
+  const [failureAnalysis, setFailureAnalysis] = useState<FailureAnalysis>({
+    loading: false,
+  });
+
+  // 🚀 智能匹配事务 + 适配步骤值
   const executeNaturalLanguage = async () => {
     if (!executeQuery.trim()) return;
-    
-    // ✅ 第一阶段：正在匹配工作流
-    setGeneratedCode('// 🔍 正在匹配工作流，请稍候...');
+
+    // 🔄 重置所有执行相关的状态，确保第二次匹配能正确显示执行按钮
+    setExecutionSteps([]);
+    setCurrentStepIndex(-1);
+    setIsExecuting(false);
+    setExecutionTabId(null);
+
     setExecutionResult({
-      isMatching: true, // 特殊标记：匹配中
-      message: '🔍 正在匹配工作流...',
-      reasoning: '正在分析您的需求，查找最适合的自动化流程'
+      loading: true,
+      matched: null,
+      reasoning: '🤖 正在智能匹配最合适的事务...',
     });
-    
-    const analyzer = new FlowAnalyzer({ apiKey, baseUrl: apiBaseUrl, model: apiModel });
 
     try {
-      // ========== 🧠 第一步：LLM 匹配工作流 ==========
-      console.log('[App] 🔍 用户查询:', executeQuery);
-      
-      const result = await analyzer.selectFlowWithLLM(executeQuery, flows);
-      
-      if (!result.flow) {
+      const analyzer = new FlowAnalyzer({ apiKey, baseUrl: apiBaseUrl, model: apiModel });
+
+      // 第 1 步：匹配事务
+      const matchResult = await analyzer.selectFlowWithLLM(executeQuery, flows);
+
+      if (!matchResult.flow) {
         setExecutionResult({
+          loading: false,
           matched: false,
-          message: `未找到匹配的工作流。请尝试更清晰的描述，或者先录制新的操作流程。`,
-          reasoning: result.reasoning || 'LLM 无法匹配到合适的工作流',
+          reasoning: matchResult.reasoning || '未找到匹配的事务，请换个描述试试',
         });
-        setGeneratedCode(`// ❌ 未找到匹配的工作流
-// 
-// 用户查询: ${executeQuery}
-// 
-// 建议:
-// 1. 尝试更清晰地描述您的需求（包含网站/功能名称）
-// 2. 先在 Sessions 页面录制新的操作流程
-// 3. 检查 Flows 列表中是否有您需要的工作流`);
         return;
       }
 
-      // ========== ✅ 第二阶段：匹配成功，正在生成代码 ==========
-      const flowWithParams = JSON.parse(JSON.stringify(result.flow));
-      
-      // 提取参数
-      let extractedKeyword: string | null = null;
-      const possibleKeys = ['inputValue', 'keyword', 'query', 'search', 'text', 'value', 'content', 'input'];
-      for (const key of possibleKeys) {
-        if (result.args[key]) {
-          extractedKeyword = result.args[key];
-          break;
-        }
-      }
-      if (!extractedKeyword && Object.values(result.args).length > 0) {
-        extractedKeyword = Object.values(result.args)[0] as string;
-      }
-      
-      // 参数替换到 flow 的步骤中
-      if (extractedKeyword && flowWithParams.steps) {
-        for (const step of flowWithParams.steps) {
-          if (step.value && typeof step.value === 'string') {
-            step.value = extractedKeyword;
-          }
-          if (step.target?.value && typeof step.target.value === 'string') {
-            step.target.value = extractedKeyword;
-          }
-        }
-      }
-      
-      setSelectedFlow(flowWithParams);
-      
-      // ✅ 更新为正在生成代码状态
+      // 第 2 步：适配事务步骤
       setExecutionResult({
+        loading: true,
         matched: true,
-        flow: flowWithParams,
-        confidence: result.confidence,
-        reasoning: '✅ 已匹配工作流，正在生成 Playwright 代码...',
-        args: result.args,
-      });
-      setGeneratedCode('// 🚀 正在生成 Playwright 代码，请稍候...');
-
-      console.log('[App] ✅ 已匹配 Flow:', flowWithParams.name);
-      
-      // ========== 🤖 第二步：LLM 生成优化后的步骤和代码 ==========
-      if (!apiKey) throw new Error('请配置 OpenAI API Key');
-
-      // 构建 Prompt
-      const systemPrompt = CODE_GENERATION_PROMPT;
-      const userPrompt = `用户需求: ${executeQuery}
-原始步骤列表：
-${JSON.stringify(flowWithParams.steps.map((s: any) => ({
-  action: s.action,
-  selector: s.target?.cssSelector,
-  value: s.value,
-  description: s.description
-})), null, 2)}`;
-      
-      // 📤 LLM 请求
-      console.log('\n' + '='.repeat(80));
-      console.log('📤 [LLM 请求 2/2] 生成代码');
-      console.log('='.repeat(80) + '\n');
-
-      // 🔥 生成 Playwright 代码
-      const response = await fetch(`${apiBaseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: apiModel,
-          temperature: 0.1,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-        }),
+        reasoning: '🔄 匹配成功！正在根据您的需求适配事务步骤...',
       });
 
-      if (!response.ok) {
-        throw new Error(`API 错误: ${response.status} ${await response.text()}`);
-      }
+      const adaptedFlow = await analyzer.adaptFlowWithLLM(executeQuery, matchResult.flow);
 
-      const llmResult = await response.json();
-      let llmContent = llmResult.choices[0].message.content;
-      
-      // 📥 打印完整响应
-      console.log('\n' + '='.repeat(80));
-      console.log('📥 [LLM 响应] - 步骤 + 代码');
-      console.log(llmContent);
-      console.log('='.repeat(80) + '\n');
-      
-      // 解析 JSON
-      let parsedResult;
-      try {
-        // 先清理 markdown 标记
-        const jsonStr = llmContent.replace(/```json/g, '').replace(/```/g, '').trim();
-        parsedResult = JSON.parse(jsonStr);
-      } catch (e) {
-        console.warn('[App] ⚠️ JSON 解析失败，降级处理');
-        // 降级：提取代码
-        const codeMatch = llmContent.match(/```javascript([\s\S]*?)```/) || llmContent.match(/```js([\s\S]*?)```/);
-        parsedResult = {
-          steps: flowWithParams.steps, // 用原步骤
-          code: codeMatch ? codeMatch[1] : llmContent
-        };
-      }
-      
-      // 🔥 关键：用 LLM 返回的优化步骤替换原来的步骤！
-      if (parsedResult.steps && Array.isArray(parsedResult.steps) && parsedResult.steps.length > 0) {
-        flowWithParams.steps = parsedResult.steps.map((s: any, i: number) => ({
-          id: `step_${Date.now()}_${i}`,
-          action: s.action || 'click',
-          description: s.description || '',
-          target: {
-            tagName: '',
-            cssSelector: s.selector || '',
-            xpath: '',
-            attributes: {},
-          },
-          value: s.value || '',
-          key: s.key || '',
-          conditions: [],
-        }));
-        console.log('[App] ✅ 已替换为 LLM 优化后的步骤，共', flowWithParams.steps.length, '步');
-      }
-      
-      // 提取代码
-      let code = parsedResult.code || llmContent;
-      code = code.replace(/```javascript/g, '').replace(/```js/g, '').replace(/```/g, '').trim();
-      
-      // 从代码中提取标题（第一行）
-      const titleMatch = code.match(/\/\/ === (.+?) ===/);
-      flowWithParams.name = titleMatch ? titleMatch[1].trim() : executeQuery;
-      
-      console.log('[App] ✅ LLM 处理完成');
-      
-      setSelectedFlow(flowWithParams);
-      setGeneratedCode(code);
-      
-      // ✅ 第三阶段：代码生成完成，标记 codeReady 为 true，显示执行按钮
+      // 完成，显示结果
+      setSelectedFlow(adaptedFlow);
       setExecutionResult({
+        loading: false,
         matched: true,
-        flow: flowWithParams,
-        confidence: result.confidence,
-        reasoning: '✨ Playwright 代码已生成完成',
-        args: result.args,
-        codeReady: true, // 标记代码已就绪，用于显示执行按钮
+        flow: adaptedFlow,
+        confidence: matchResult.confidence,
+        reasoning: `匹配成功！置信度: ${(matchResult.confidence * 100).toFixed(0)}%\n${matchResult.reasoning}\n\n✅ 已根据您的需求适配步骤值`,
       });
-      
-    } catch (error) {
-      // ⚠️ LLM 分析失败：直接显示错误，绝不降级
-      console.error('[App] ❌ LLM 处理失败:', error);
-      const errorMsg = error instanceof Error ? error.message : String(error);
-      
+
+    } catch (error: any) {
+      console.error('执行失败:', error);
       setExecutionResult({
+        loading: false,
         matched: false,
-        message: errorMsg,
-        reasoning: 'LLM 处理失败，请检查 API 配置后重试',
+        reasoning: error.message || '执行失败，请重试',
       });
-      
-      setGeneratedCode(`// ❌ LLM 处理失败
-// 
-// 错误信息: ${errorMsg}
-// 
-// 检查清单:
-// 1. ✅ API Key 是否正确配置？
-// 2. ✅ API Base URL 是否正确？
-// 3. ✅ API 余额是否充足？
-// 4. ✅ 网络连接是否正常？`);
     }
   };
 
-  // 🚀 执行 Flow（通过扩展在当前活动标签页执行）
-  const executeFlowInPage = async () => {
-    if (!selectedFlow) return;
-    
-    if (!chrome?.runtime) {
-      alert('⚠️ This feature only works when Dashboard is opened from the Chrome Extension!\n\nPlease open Dashboard by clicking the extension icon → "Open Dashboard"');
+  // 🚀 开始分步执行事务
+  const startStepExecution = async () => {
+    if (!deps.selectedFlow || !deps.selectedFlow.steps) return;
+
+    // 🔄 每次重新执行时，先重置标签页ID状态
+    // 避免用户关闭标签页后，使用已失效的旧ID
+    setExecutionTabId(null);
+
+    // 1. 获取当前所有标签页，让用户选择执行目标
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
+        const { tabs } = await chrome.runtime.sendMessage({ type: 'GET_TABS' });
+        
+        // 构建选项：第一个是「新建标签页」，后面是当前打开的页面
+        const options = [
+          { id: 'new', label: '🆕 新建标签页执行 (推荐)' },
+          ...tabs.map((t: any) => ({
+            id: t.id,
+            label: `${t.active ? '📍 ' : ''}${t.title}`,
+          })),
+        ];
+        
+        // 弹出选择框
+        const tabNames = options.map((o, i) => `${i}. ${o.label}`).join('\n');
+        const userInput = prompt(
+          `请选择在哪个标签页执行:\n\n${tabNames}`,
+          '0'
+        );
+        
+        if (userInput === null) return; // 用户取消
+        
+        const selection = parseInt(userInput || '0', 10);
+        const selectedOption = options[Math.min(selection, options.length - 1)];
+        
+        if (selectedOption.id === 'new') {
+          setExecutionTabId(null); // null 表示新建
+        } else {
+          setExecutionTabId(selectedOption.id as number);
+          console.log(`✅ 选择在标签页 ${selectedOption.id} 执行: ${selectedOption.label}`);
+        }
+      }
+    } catch (e) {
+      // 获取失败，默认新建标签页
+      console.warn('⚠️ 获取标签页失败，默认新建标签页执行');
+      setExecutionTabId(null);
+    }
+
+    // 2. 初始化步骤状态
+    const initialSteps: ExecutionStepState[] = deps.selectedFlow.steps.map((step: any, index: number) => ({
+      id: `step-${index}`,
+      index,
+      status: 'pending',
+      action: step.action,
+      selector: step.targetSelector || step.target?.cssSelector || '',
+      description: step.description,
+    }));
+
+    setExecutionSteps(initialSteps);
+    setCurrentStepIndex(0);
+    setIsExecuting(true);
+
+    // 开始执行第一步
+    await executeStep(0, initialSteps);
+  };
+
+  // 📌 执行单个步骤
+  // 🔧 关键：使用 currentTabId 参数而不是 executionTabId state，避免React状态更新异步导致的问题
+  const executeStep = async (stepIndex: number, steps: ExecutionStepState[], currentTabId: number | null = executionTabId) => {
+    if (stepIndex >= steps.length) {
+      // ✅ 全部执行完成
+      setIsExecuting(false);
+      // 保留原来的匹配信息，只更新提示文字
+      setExecutionResult((prev: any) => ({
+        ...prev,
+        success: true,
+        matched: true,
+        reasoning: '🎉 全部步骤执行完成！',
+      }));
       return;
     }
-    
-    setIsExecuting(true);
-    setExecutionProgress({
-      currentStep: 0,
-      totalSteps: selectedFlow.steps.length,
-      status: '⏳ Sending execution command to active tab...',
-    });
-    
+
+    const step = steps[stepIndex];
+    const flowStep = deps.selectedFlow?.steps?.[stepIndex];
+
+    console.log(`\n▶️ 执行步骤 ${stepIndex + 1}/${steps.length}: ${step.description}`);
+
+    // 更新为运行中状态
+    const updatedSteps = [...steps];
+    updatedSteps[stepIndex] = { ...step, status: 'running' };
+    setExecutionSteps(updatedSteps);
+    setCurrentStepIndex(stepIndex);
+
     try {
-      const args = executionResult?.args || {};
+      // 🔧 调用 background 执行真实的浏览器操作
+      if (typeof chrome === 'undefined' || !chrome.runtime) {
+        throw new Error('请在插件 Dashboard 中使用此功能');
+      }
+
+      // 获取值，同时兼容多种数据结构
+      let stepValue = flowStep?.value;
       
-      // 显示执行开始
-      setExecutionProgress({
-        currentStep: 0,
-        totalSteps: selectedFlow.steps.length,
-        status: '▶️ Flow started! Check your target page...',
-      });
+      // 如果是 navigate 且 value 为空，尝试从其他字段获取
+      if (step.action === 'navigate' && !stepValue) {
+        const flowStepAny = flowStep as any;
+        stepValue = flowStepAny?.toUrl || flowStepAny?.url || flowStepAny?.target?.url || '';
+      }
       
-      // 通过 Background 发送命令给当前活动标签页
-      await chrome.runtime.sendMessage({
-        action: 'EXECUTE_FLOW',
-        flow: selectedFlow,
-        args,
+      console.log(`   - action: ${step.action}, selector: ${step.selector}, value: ${stepValue}, waitTimeout: ${flowStep?.waitTimeout || 5000}ms, targetTabId: ${currentTabId}`);
+
+      const result = await chrome.runtime.sendMessage({
+        type: 'EXECUTE_STEP',
+        action: step.action,
+        selector: step.selector,
+        value: stepValue,
+        targetTabId: currentTabId, // 🔧 使用函数参数传入的 tabId，而不是 state
+        stepIndex: stepIndex,
+        waitTimeout: flowStep?.waitTimeout || 5000,
+        description: step.description,
       });
-      
-      // 更新状态为执行中
-      setExecutionProgress({
-        currentStep: 0,
-        totalSteps: selectedFlow.steps.length,
-        status: '🚀 Flow started! Switch to the target page to watch it execute...',
-      });
-      
-      // 3秒后显示完成提示（因为是后台异步执行）
-      setTimeout(() => {
-        setExecutionProgress({
-          currentStep: selectedFlow.steps.length,
-          totalSteps: selectedFlow.steps.length,
-          status: `✅ Execution command sent! Check your target page.\n\n(The flow is running in the background)`,
-        });
-        setIsExecuting(false);
-      }, 3000);
-    } catch (error) {
-      console.error('Execution error:', error);
-      setExecutionProgress({
-        currentStep: -1,
-        totalSteps: 0,
-        status: `❌ Error: ${String(error)}\n\nMake sure the target page is open and refreshed!`,
-      });
-    } finally {
-      setTimeout(() => setIsExecuting(false), 1000);
+
+      // 🔧 获取后台返回的最新 tabId（可能是新建的标签页）
+      const latestTabId = result.tabId || currentTabId;
+
+      // 同时也更新到 state 中，确保用户能看到最新状态
+      if (result.tabId) {
+        console.log(`✅ 使用标签页执行，Tab ID: ${result.tabId}`);
+        setExecutionTabId(result.tabId);
+      }
+
+      // ✅ 关键：判断后台返回的 success 字段
+      if (result.success) {
+        console.log(`✅ 步骤 ${stepIndex + 1} 执行成功`);
+        updatedSteps[stepIndex] = { ...step, status: 'success' };
+        setExecutionSteps([...updatedSteps]);
+
+        // 🔧 立即执行下一步，传入最新的 tabId，不依赖 state
+        setTimeout(() => executeStep(stepIndex + 1, updatedSteps, latestTabId), 300);
+      } else {
+        // ❌ 后台返回执行失败
+        const errorMsg = result.error || '未知错误';
+        console.error(`❌ 步骤 ${stepIndex + 1} 执行失败: ${errorMsg}`);
+        throw new Error(errorMsg); // 抛出错误，由 catch 块统一处理
+      }
+
+    } catch (error: any) {
+      // ❌ 执行失败
+      console.error(`❌ 步骤 ${stepIndex + 1} 执行失败:`, error);
+      const errorMessage = error.message || '执行失败';
+      updatedSteps[stepIndex] = {
+        ...step,
+        status: 'failed',
+        error: errorMessage,
+      };
+      setExecutionSteps([...updatedSteps]);
+      setIsExecuting(false); // 暂停，等待用户决策
+
+      // 🧠 调用 LLM 分析失败原因
+      await analyzeFailure(stepIndex, updatedSteps, currentTabId, errorMessage);
     }
   };
 
-  // 复制代码
-  const copyCode = () => {
-    navigator.clipboard.writeText(deps.generatedCode);
-    alert('Code copied to clipboard');
+  // 🔄 用户选择：重试当前步骤
+  const retryStep = async () => {
+    setIsExecuting(true);
+    // 重试时传入最新的 tabId
+    await executeStep(currentStepIndex, executionSteps, executionTabId);
+  };
+
+  // ⏭️ 用户选择：跳过当前步骤
+  const skipStep = async () => {
+    const updatedSteps = [...executionSteps];
+    updatedSteps[currentStepIndex] = {
+      ...updatedSteps[currentStepIndex],
+      status: 'success',
+      error: '(用户跳过)',
+    };
+    setExecutionSteps(updatedSteps);
+    setIsExecuting(true);
+    // 跳过时传入最新的 tabId
+    await executeStep(currentStepIndex + 1, updatedSteps, executionTabId);
+  };
+
+  // ❌ 用户选择：取消执行
+  const cancelExecution = () => {
+    setIsExecuting(false);
+    setExecutionSteps([]);
+    setCurrentStepIndex(-1);
+    setExecutionTabId(null);
+    // 同时清空失败分析
+    setFailureAnalysis({ loading: false });
+  };
+
+  // 🧠 分析失败原因（截图 + LLM）
+  const analyzeFailure = async (
+    stepIndex: number,
+    steps: ExecutionStepState[],
+    tabId: number | null,
+    errorMessage: string
+  ) => {
+    try {
+      setFailureAnalysis({ loading: true });
+
+      // 1. 获取页面截图和 URL
+      let screenshot: string | undefined;
+      let pageUrl = '';
+      
+      if (tabId && typeof chrome !== 'undefined' && chrome.runtime) {
+        try {
+          const result = await chrome.runtime.sendMessage({
+            type: 'CAPTURE_SCREENSHOT',
+            tabId,
+          });
+          
+          if (result.success) {
+            screenshot = result.screenshot;
+            pageUrl = result.pageUrl;
+            console.log('📸 截图成功，大小:', (screenshot.length / 1024).toFixed(2), 'KB');
+          }
+        } catch (screenshotError) {
+          console.warn('⚠️ 获取截图失败，将不使用截图进行分析:', screenshotError);
+        }
+      }
+
+      // 2. 收集已成功的步骤
+      const successfulSteps = steps.slice(0, stepIndex).filter(s => s.status === 'success');
+      const failedStep = steps[stepIndex];
+
+      // 3. 调用 LLM 分析
+      const analyzer = new FlowAnalyzer({ apiKey: deps.apiKey, baseUrl: deps.apiBaseUrl, model: deps.apiModel });
+      const analysis = await analyzer.analyzeFailure(
+        deps.selectedFlow?.name || '未知事务',
+        pageUrl,
+        successfulSteps,
+        {
+          ...failedStep,
+          value: deps.selectedFlow?.steps?.[stepIndex]?.value,
+        },
+        errorMessage,
+        screenshot
+      );
+
+      setFailureAnalysis({
+        loading: false,
+        result: analysis,
+      });
+
+    } catch (analysisError: any) {
+      console.error('❌ 失败分析出错:', analysisError);
+      setFailureAnalysis({
+        loading: false,
+        result: null,
+        error: analysisError.message || '分析失败',
+      });
+    }
   };
 
   return {
     executeNaturalLanguage,
-    executeFlowInPage,
-    copyCode,
+    // 🚀 分步执行相关
+    executionSteps,
+    currentStepIndex,
+    isExecuting,
+    startStepExecution,
+    retryStep,
+    skipStep,
+    cancelExecution,
+    // 🧠 失败分析相关
+    failureAnalysis,
+    analyzeFailure,
   };
 }

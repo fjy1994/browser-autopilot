@@ -19,11 +19,11 @@ function reportOperation(op) {
 
 let lastClickTime = 0;
 
-document.addEventListener('click', (e) => {
+function recordClick(e) {
   if (!isRecording) return;
   
   const now = Date.now();
-  if (now - lastClickTime < 300) return;
+  if (now - lastClickTime < 500) return;  // 延长去重窗口，防止 mousedown + click 重复记录
   lastClickTime = now;
   
   const target = e.target;
@@ -43,7 +43,11 @@ document.addEventListener('click', (e) => {
   };
   
   reportOperation(op);
-}, true);
+}
+
+// 同时监听 mousedown 和 click（百度等网站用 mousedown 触发跳转）
+document.addEventListener('mousedown', recordClick, true);
+document.addEventListener('click', recordClick, true);
 
 let lastInputValue = '';
 
@@ -72,6 +76,7 @@ document.addEventListener('input', (e) => {
         target: {
           tagName: target.tagName?.toLowerCase() || '',
           cssSelector: selector,
+          textContent: target.textContent?.slice(0, 100) || '',
         },
         value: lastInputValue.slice(0, 200),
       };
@@ -98,6 +103,7 @@ document.addEventListener('keydown', (e) => {
         target: {
           tagName: target.tagName?.toLowerCase() || '',
           cssSelector: selector,
+          textContent: target.textContent?.slice(0, 100) || '',
         },
         value: target.value,
       };
@@ -121,53 +127,90 @@ document.addEventListener('keydown', (e) => {
       target: {
         tagName: target.tagName?.toLowerCase() || '',
         cssSelector: selector,
+        textContent: target.textContent?.slice(0, 100) || '',
       },
-      key: 'Enter',
+      value: 'Enter',  // 统一用 value 字段：input 放文本，keydown 放按键名
     };
     
     reportOperation(op);
   }
 }, true);
 
+function isUniqueSelector(el, selector) {
+  try {
+    const elements = document.querySelectorAll(selector);
+    return elements.length === 1 && elements[0] === el;
+  } catch (e) {
+    return false;
+  }
+}
+
 function getSelector(el) {
   if (!el) return '';
   
-  let current = el;
-  while (current && current.nodeType === Node.ELEMENT_NODE) {
-    if (current.id) {
-      return '#' + current.id;
-    }
-    current = current.parentElement;
+  // 1. ID 优先（但要排除动态 ID）
+  if (el.id && !el.id.match(/^\d+$/) && !el.id.match(/[A-Z]{2,}\d{3,}/) && !el.id.match(/^id_/)) {
+    const selector = '#' + CSS.escape(el.id);
+    if (isUniqueSelector(el, selector)) return selector;
   }
   
-  current = el;
-  while (current && current.nodeType === Node.ELEMENT_NODE) {
-    if (current.getAttribute('name')) {
-      return `[name="${current.getAttribute('name')}"]`;
-    }
-    current = current.parentElement;
+  // 2. name 属性
+  if (el.getAttribute('name')) {
+    const selector = `[name="${CSS.escape(el.getAttribute('name'))}"]`;
+    if (isUniqueSelector(el, selector)) return selector;
   }
   
-  if (window.location.href.includes('baidu.com')) {
-    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-      return '#kw';
-    }
-    if (el.tagName === 'BUTTON' || el.tagName === 'INPUT' && el.type === 'submit') {
-      return '#su';
+  // 3. 测试友好属性
+  const testAttrs = ['data-testid', 'data-id', 'data-test', 'id', 'data-cy', 'data-qa'];
+  for (const attr of testAttrs) {
+    const value = el.getAttribute(attr);
+    if (value && !value.includes(' ') && value.length < 50 && !value.match(/^\d+$/)) {
+      const selector = `[${attr}="${CSS.escape(value)}"]`;
+      if (isUniqueSelector(el, selector)) return selector;
     }
   }
   
-  if (el.tagName === 'INPUT') {
-    return `input[type="${el.type || 'text'}"]`;
-  }
-  if (el.tagName === 'BUTTON') {
-    return 'button';
+  // 4. 有意义的 class（排除动态 class）
+  if (el.className && typeof el.className === 'string') {
+    const classes = el.className.trim().split(/\s+/).filter(c => 
+      c && 
+      !c.includes('__') &&  // 排除 CSS Modules
+      !c.includes('--') &&  // 排除 CSS 变量
+      !c.match(/^[A-Z]/) && // 排除大写开头
+      !c.match(/\d{3,}/) && // 排除含长数字
+      c.length > 2 && c.length < 30
+    );
+    for (const cls of classes.slice(0, 3)) {
+      const selector = `${el.tagName.toLowerCase()}.${CSS.escape(cls)}`;
+      if (isUniqueSelector(el, selector)) return selector;
+    }
   }
   
+  // 5. 标签 + 文本内容匹配（运行时用，不存选择器）
+  // 跳过，文本内容单独记录在 targetText 字段
+  
+  // 6. 组合父级路径（最多 3 层）
   let path = [];
-  current = el;
-  while (current && current.nodeType === Node.ELEMENT_NODE && path.length < 2) {
-    path.unshift(current.tagName.toLowerCase());
+  let current = el;
+  while (current && current.nodeType === Node.ELEMENT_NODE && path.length < 3) {
+    let part = current.tagName.toLowerCase();
+    
+    // 加 nth-child 但只用在同级有重复标签时
+    const siblings = Array.from(current.parentElement?.children || []);
+    const sameTagSiblings = siblings.filter(s => s.tagName === current.tagName);
+    if (sameTagSiblings.length > 1) {
+      const index = sameTagSiblings.indexOf(current) + 1;
+      part += `:nth-child(${index})`;
+    }
+    
+    path.unshift(part);
+    
+    // 如果已经能唯一确定了，就不用往上走了
+    const tempSelector = path.join(' > ');
+    if (isUniqueSelector(el, tempSelector)) {
+      return tempSelector;
+    }
+    
     current = current.parentElement;
   }
   

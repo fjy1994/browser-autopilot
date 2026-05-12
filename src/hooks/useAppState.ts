@@ -6,20 +6,12 @@ export function useAppState() {
   const [sessions, setSessions] = useState<OperationSession[]>([]);
   const [flows, setFlows] = useState<OperationFlow[]>([]);
   const [selectedFlow, setSelectedFlow] = useState<OperationFlow | null>(null);
-  const [generatedCode, setGeneratedCode] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [apiBaseUrl, setApiBaseUrl] = useState('https://api.openai.com/v1');
   const [apiModel, setApiModel] = useState('gpt-4o-mini');
+  const [allowedDomains, setAllowedDomains] = useState('');
   const [executeQuery, setExecuteQuery] = useState('');
   const [executionResult, setExecutionResult] = useState<any>(null);
-  const [taskDescription, setTaskDescription] = useState('');
-  const [targetDomain, setTargetDomain] = useState('');
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [executionProgress, setExecutionProgress] = useState<{
-    currentStep: number;
-    totalSteps: number;
-    status: string;
-  } | null>(null);
   const [isMining, setIsMining] = useState(false);
   const [miningProgress, setMiningProgress] = useState<{
     totalOps: number;
@@ -52,6 +44,9 @@ export function useAppState() {
       
       const savedModel = await flowDb.getSetting('openai_model');
       if (savedModel) setApiModel(savedModel);
+
+      const savedDomains = await flowDb.getSetting('allowed_domains');
+      if (savedDomains) setAllowedDomains(savedDomains);
     } catch (error) {
       console.error('Init failed:', error);
     }
@@ -70,32 +65,24 @@ export function useAppState() {
     sessions,
     flows,
     selectedFlow,
-    generatedCode,
     apiKey,
     apiBaseUrl,
     apiModel,
+    allowedDomains,
     executeQuery,
     executionResult,
-    taskDescription,
-    targetDomain,
-    isExecuting,
-    executionProgress,
     isMining,
     miningProgress,
     
     setSessions,
     setFlows,
     setSelectedFlow,
-    setGeneratedCode,
     setApiKey,
     setApiBaseUrl,
     setApiModel,
+    setAllowedDomains,
     setExecuteQuery,
     setExecutionResult,
-    setTaskDescription,
-    setTargetDomain,
-    setIsExecuting,
-    setExecutionProgress,
     setIsMining,
     setMiningProgress,
     
