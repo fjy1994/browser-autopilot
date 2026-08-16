@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# 常见的 id 字段名，按优先级取第一个非空
+
 _ID_KEYS = ("resource_id", "resource-id", "id", "key", "accessibility_id", "view_id")
 
 
@@ -44,7 +44,7 @@ def _in_region(node: dict, region: dict | None) -> bool:
     w = right - left
     h = bottom - top
     if w <= 0 or h <= 0:
-        return True  # 没有有效坐标，不拦截（交由 LLM 裁剪环节把关）
+        return True  
     cx = (left + right) / 2.0
     cy = (top + bottom) / 2.0
     return (
@@ -80,7 +80,7 @@ def compute_page_signature(ui_tree: dict, valid_region: dict | None = None) -> s
     return "; ".join(parts)
 
 
-# ── 兼容保留：旧布局/文本哈希（不再用于匹配，仅供外部引用） ──
+
 
 import hashlib
 import json

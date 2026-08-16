@@ -12,8 +12,8 @@ from .perceive import ScreenState, HypiumStub
 
 class ActionDecision:
     """动作指令：UI 工具构造，执行器落地。"""
-    action: str     # tap / type / swipe / wait / done
-    params: dict    # 具体参数
+    action: str  
+    params: dict  
 
     def __init__(self, action: str = "", params: dict | None = None):
         self.action = action
@@ -24,14 +24,6 @@ class ActionDecision:
 
 
 class ActionExecutor:
-    """
-    动作执行器。
-
-    职责:
-      1. 将 LLM 给出的缩放后坐标还原为实际坐标
-      2. 在 ui_tree 中查找坐标对应的元素，提取稳定定位条件
-      3. 通过 Hypium 执行操作
-    """
 
     def __init__(self, hypium: HypiumStub | None = None):
         self.hypium = hypium or HypiumStub()
@@ -62,7 +54,7 @@ class ActionExecutor:
         else:
             return f"未知动作: {action}"
 
-    # ── 具体操作 ─────────────────────────────────────────
+    
 
     def _do_tap(self, params: dict, screen: ScreenState) -> str:
         """点击操作。"""
@@ -70,20 +62,20 @@ class ActionExecutor:
         scaled_y = params.get("y", 0)
         target_text = params.get("target_text", "")
 
-        # 1. 坐标还原
+        
         real_x, real_y = self._map_coords(scaled_x, scaled_y, screen)
 
-        # 2. 在 ui_tree 中找元素
+        
         element = self._find_element_at(real_x, real_y, target_text, screen.ui_tree)
 
         if element:
-            # 提取稳定定位条件
+            
             locator = self._extract_locator(element)
             desc = element.get("text") or element.get("key") or target_text or "元素"
             self.hypium.click(**locator)
             return f"点击元素「{desc}」(locator={locator})"
         else:
-            # 坐标兜底
+            
             self.hypium.click(x=real_x, y=real_y)
             return f"点击坐标 ({real_x}, {real_y})（未在 ui_tree 中找到匹配元素）"
 
@@ -106,7 +98,7 @@ class ActionExecutor:
         self.hypium.wait(ms)
         return f"等待 {ms}ms"
 
-    # ── 坐标处理 ─────────────────────────────────────────
+    
 
     def _map_coords(self, scaled_x: int, scaled_y: int,
                     screen: ScreenState) -> tuple[int, int]:
@@ -114,16 +106,16 @@ class ActionExecutor:
         if screen.scale_factor > 0:
             real_x = int(scaled_x / screen.scale_factor)
             real_y = int(scaled_y / screen.scale_factor)
-            # 限制在屏幕范围内
+            
             real_x = max(0, min(real_x, screen.screen_width - 1))
             real_y = max(0, min(real_y, screen.screen_height - 1))
             return real_x, real_y
         return scaled_x, scaled_y
 
-    # ── UI 树元素查找 ───────────────────────────────────
+    
 
     def _find_element_at(
-        self, x: int, y: int, target_text: str, ui_tree: dict | None
+            self, x: int, y: int, target_text: str, ui_tree: dict | None
     ) -> dict | None:
         """在 ui_tree 中查找包含 (x, y) 的目标元素。"""
         if not ui_tree:
@@ -135,18 +127,18 @@ class ActionExecutor:
         if not candidates:
             return None
 
-        # 首选：匹配 target_text
+        
         if target_text:
             for c in candidates:
                 elem_text = self._get_element_text(c)
                 if target_text.lower() in elem_text.lower():
                     return c
 
-        # 次选：最深层的节点（最具体的控件）
+        
         return candidates[-1]
 
     def _search_by_coords(
-        self, node: dict, x: int, y: int, results: list
+            self, node: dict, x: int, y: int, results: list
     ) -> None:
         """递归搜索包含坐标的节点。"""
         bounds = node.get("bounds", {}) or {}
@@ -159,7 +151,7 @@ class ActionExecutor:
         if not contains:
             return
 
-        # 检查是否为交互节点
+        
         clickable = node.get("clickable", False)
         has_text = bool(self._get_element_text(node))
         has_key = bool(node.get("key"))
@@ -168,7 +160,7 @@ class ActionExecutor:
         if clickable or has_text or has_key or node_type in ("button", "imagebutton"):
             results.append(node)
 
-        # 继续深入子节点（可能有更精确的匹配）
+        
         for child in node.get("children", []):
             self._search_by_coords(child, x, y, results)
 
@@ -189,7 +181,7 @@ class ActionExecutor:
             return {"key": key}
         if text:
             return {"text": text, "key": ""}
-        # 坐标兜底
+        
         cx = ((bounds.get("left", 0) or 0) + (bounds.get("right", 0) or 0)) // 2
         cy = ((bounds.get("top", 0) or 0) + (bounds.get("bottom", 0) or 0)) // 2
         return {"x": cx, "y": cy}
@@ -197,9 +189,9 @@ class ActionExecutor:
     def _get_element_text(self, element: dict) -> str:
         """获取元素的文本内容。"""
         return (
-            element.get("text")
-            or element.get("label")
-            or element.get("content")
-            or element.get("contentDescription")
-            or ""
+                element.get("text")
+                or element.get("label")
+                or element.get("content")
+                or element.get("contentDescription")
+                or ""
         ).strip()

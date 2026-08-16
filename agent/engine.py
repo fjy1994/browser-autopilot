@@ -1,55 +1,32 @@
-"""
-Agent 执行引擎 —— 引擎驱动的感知-决策-执行循环（连续用例模式）。
-
-架构:
-  整个用例作为一段连续任务执行，不按步骤编号逐条驱动（原始步骤可能模糊，
-  编号没有执行约束意义）：
-    1. 引擎自动截屏，把「上一步执行结果 + 执行记录 + 当前屏幕状态 + 完整用例目标」组装成消息
-    2. LLM 基于消息判断上一步是否生效，输出下一步动作（每轮只调用一个工具）
-    3. 引擎执行动作；UI 动作执行后自动重新截屏，把新屏幕带入下一轮
-    4. LLM 达成一个目标 → mark_progress 声明；全部目标达成 → finish_case 收尾；无法完成 → report_failure 中止
-
-LLM 通过工具输出动作：
-  - UI 工具（tap / type / swipe / wait）
-  - 状态声明工具（mark_progress / finish_case / report_failure）
-  - 特性工具（get_feature，特性列表已注入系统提示词）
-  - 通用工具（list_dir / read_file / write_file / exec_command）
-
-进度感知方式：完整用例信息（标题、全部步骤与预期结果）在每条消息中原封不动提供，
-执行记录（LLM 通过 mark_progress 声明的已完成目标列表）逐条回显，LLM 据此判断剩余目标。
-"""
-
 from __future__ import annotations
 
+import base64
+import json
+import mimetypes
 import os
+import re
+import time
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
+from memory import MemoryStore
 from .act import ActionExecutor
 from .config import AgentConfig
 from .knowledge import KnowledgeService
-from .perceive import HypiumStub, Perceiver
-from .tools import ScreenBox, _format_screen, build_tools
-from memory import MemoryStore
+from .perceive import HypiumStub, Screen
+from .prompts import PROMPT_DIR, load_prompt
+from .tools import build_tools
 
+DECLARE_ACTIONS = {"finish_case", "report_failure"}
 
-# UI 动作：执行后引擎必须重新截图确认页面变化
-UI_ACTIONS = {"tap", "type", "swipe", "wait"}
-# 查询动作：屏幕不变，执行后不重新截图
-QUERY_ACTIONS = {"get_feature", "list_dir", "read_file", "write_file", "exec_command"}
-# 状态声明动作：不操作屏幕，由引擎直接处理
-DECLARE_ACTIONS = {"mark_progress", "finish_case", "report_failure"}
+SUMMARY_WINDOW = 8
+
+SUMMARY_BATCH = 4
 
 
 def _load_system_prompt(memory: MemoryStore) -> str:
-    """
-    读取系统提示词，并附上当前特性知识库列表。
-
-    特性列表直接注入提示词（每条消息 LLM 都看得到），
-    不需要 LLM 先调用工具去查"有哪些特性"。
-    """
-    path = os.path.join(os.path.dirname(__file__), "prompt", "system.md")
+    path = PROMPT_DIR / "system.md"
     with open(path, encoding="utf-8") as f:
         base = f.read()
 
@@ -65,30 +42,21 @@ def _load_system_prompt(memory: MemoryStore) -> str:
             lines.append(f"- {m.get('feature_id')}: {m.get('name')}（{m.get('app') or '未知应用'}）{summary}")
         feature_list = "\n".join(lines)
     else:
-        feature_list = "## 当前特性知识库\n（暂无特性，操作以消息中附带的当前屏幕状态为准）"
+        feature_list = "## 当前特性知识库\n（暂无数据）"
 
     return base + "\n\n" + feature_list
 
 
 class AgentEngine:
-    """
-    Agent 执行引擎（引擎驱动循环，连续用例模式）。
-
-    完整流程:
-      整个用例一个循环（截图 → LLM 出动作 → 执行 → 再截图）
-      → LLM 通过 mark_progress 声明目标、finish_case 收尾、report_failure 中止
-      → 全部成功时 learn_from_execution（执行经验沉淀为特性知识）
-    """
 
     def __init__(self, config: AgentConfig | None = None):
         self.config = config or AgentConfig.from_env()
 
-        # 初始化各模块
         hypium = HypiumStub(
             device_serial=self.config.device_serial,
             resolution=self.config.device_resolution,
         )
-        self.perceiver = Perceiver(
+        self.screen = Screen(
             hypium=hypium,
             target_width=self.config.screenshot_target_width,
         )
@@ -96,20 +64,13 @@ class AgentEngine:
             data_dir=self.config.memory_dir or None,
         )
         self.executor = ActionExecutor(hypium=hypium)
-
-        # 初始化 LLM
         self.llm = self._init_llm()
-        # 特性知识检索 / 经验沉淀
         self.knowledge = KnowledgeService(self.llm, self.memory, self.config)
-
-        # 注册工具（引擎持有屏幕状态盒并负责截屏）
-        self.screen_box = ScreenBox(self.perceiver, self.memory)
         self.tools = build_tools(
-            perceiver=self.perceiver,
             executor=self.executor,
             memory=self.memory,
             config=self.config,
-            box=self.screen_box,
+            screen=self.screen,
         )
         self._tool_map = {t.name: t for t in self.tools}
         self._llm_tools = self.llm.bind_tools(self.tools)
@@ -124,10 +85,20 @@ class AgentEngine:
             max_tokens=2048,
         )
 
-    # ── 工具与屏幕 ──────────────────────────────────────
+    def parse_case_input(self, text: str) -> dict:
+        prompt = load_prompt("case_parse").format(user_input=text)
+        try:
+            data = json.loads(re.search(r"\{[\s\S]*\}", str(self.llm.invoke(prompt).content)).group(0))
+            title = str(data.get("title") or "").strip()
+            steps = [str(s).strip() for s in (data.get("steps") or []) if str(s).strip()]
+            if title and steps:
+                checkpoints = [str(s).strip() for s in (data.get("checkpoints") or []) if str(s).strip()]
+                return {"title": title, "steps": steps, "checkpoints": checkpoints}
+        except Exception:
+            pass
+        return {"title": "", "steps": [], "checkpoints": []}
 
     def _invoke_tool(self, name: str, args: dict) -> str:
-        """调用工具并返回结果文本。"""
         fn = self._tool_map.get(name)
         if fn is None:
             return f"未知工具: {name}"
@@ -136,217 +107,185 @@ class AgentEngine:
         except Exception as e:
             return f"{name} 调用失败: {e}"
 
-    def _current_screen_text(self) -> str:
-        """把当前屏幕状态格式化为文本（截图 + UI 元素 + 页面记忆）。"""
-        screen = self.screen_box.current
+    def _current_screen_image(self) -> str | None:
+        screen = self.screen.current
         if screen is None:
-            return "（尚无屏幕状态）"
-        try:
-            mem = self.memory.query(screen.ui_tree, app_version="1.0")
-        except Exception:
-            mem = {}
-        return _format_screen(screen, mem, self.config.screenshot_target_width)
+            return None
+        path = screen.scaled_screenshot_path or screen.screenshot_path
+        if not path or not os.path.exists(path):
+            return None
+        mime = mimetypes.guess_type(path)[0] or "image/png"
+        with open(path, "rb") as f:
+            return f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
 
-    # ── 消息组装 ────────────────────────────────────────
+    def _build_user_prompt(self) -> list:
+        image = self._current_screen_image()
+        if image:
+            return [{"type": "image_url", "image_url": {"url": image}}]
+        return [{"type": "text", "text": "（当前无截图）"}]
 
-    def _build_case_message(self, title: str, original_steps: list[str],
-                            expected_results: list[str], progress: list[str],
-                            last_result: str, screen_text: str) -> str:
-        """组装每轮消息：完整用例信息 + 执行记录 + 上一步结果 + 当前屏幕 + 操作规则。"""
-        parts = [
-            f"用例标题: {title}",
-            "",
-            "完整测试步骤与预期结果（编号仅作参考，你可自行安排执行顺序，不必逐条对应）:",
-        ]
-        for i, s in enumerate(original_steps):
-            e = expected_results[i] if i < len(expected_results or []) else ""
-            line = f"  {i + 1}. {s}"
-            if e:
-                line += f"\n     预期结果: {e}"
-            parts.append(line)
-        parts.append("")
-        if progress:
-            parts.append("执行记录（你已声明完成的目标，不要重复执行）:")
-            for i, p in enumerate(progress, 1):
-                parts.append(f"  {i}. {p}")
-        else:
-            parts.append("执行记录: （暂无，本次执行尚未声明任何完成目标）")
-        parts.append("")
-        parts.append("上一步执行结果:")
-        parts.append(f"  {last_result}")
-        parts.append("")
-        parts.append("当前屏幕状态:")
-        parts.append(screen_text)
-        parts.append("")
-        parts.append(
-            "操作规则（每轮只调用一个工具）:\n"
-            "1. 先结合「上一步执行结果」和「当前屏幕状态」判断上一步操作是否生效\n"
-            "2. 需要继续操作时，调用 tap / type / swipe / wait 之一\n"
-            "3. 需要特性细节时，调用 get_feature（特性列表已在系统提示词末尾）\n"
-            "4. 达成一个目标 → 调用 mark_progress，参数 summary 写清楚达成了什么\n"
-            "5. 全部目标已达成、用例执行完毕 → 调用 finish_case 总结收尾\n"
-            "6. 确实无法完成 → 调用 report_failure 说明原因，整个用例中止"
+    def _round_bounds(self, messages: list) -> list[tuple[int, int]]:
+        starts = [i for i, message in enumerate(messages)
+                  if message.additional_kwargs.get("round_observe")]
+        bounds = []
+        for i, s in enumerate(starts):
+            e = starts[i + 1] if i + 1 < len(starts) else len(messages)
+            bounds.append((s, e))
+        return bounds
+
+    def _messages_to_text(self, msgs: list) -> str:
+        parts = []
+        for m in msgs:
+            if isinstance(m, SystemMessage):
+                parts.append("[旧摘要]\n" + str(m.content))
+            elif isinstance(m, HumanMessage):
+                if isinstance(m.content, list):
+                    text = "".join(
+                        b.get("text", "") for b in m.content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                else:
+                    text = str(m.content)
+                parts.append("[执行轮次]\n" + text)
+            elif isinstance(m, ToolMessage):
+                parts.append("[工具结果]\n" + str(m.content))
+            elif isinstance(m, AIMessage):
+                text = str(m.content or "").strip()
+                calls = "; ".join(
+                    f"{tc['name']}({json.dumps(tc.get('args') or {}, ensure_ascii=False)})"
+                    for tc in getattr(m, "tool_calls", None) or []
+                )
+                action = " ".join(x for x in (text, calls) if x).strip()
+                parts.append("[模型动作]\n" + action)
+        return "\n\n".join(parts)
+
+    def _summarize_old_rounds(self, messages: list,
+                              bounds: list[tuple[int, int]], count: int) -> bool:
+        start = bounds[0][0]
+        end = bounds[count - 1][1]
+        batch = messages[start:end]
+        old_summary = next(
+            (str(m.content) for i, m in enumerate(messages)
+             if i > 0 and isinstance(m, SystemMessage)), "")
+        prompt = load_prompt("memory_summary").format(
+            old_summary=old_summary or "（无）",
+            recent_log=self._messages_to_text(batch),
         )
-        return "\n".join(parts)
-
-    # ── 用例执行（连续模式） ────────────────────────────
-
-    def _run_case(self, title: str, original_steps: list[str],
-                  expected_results: list[str]) -> dict:
-        """
-        整个用例作为一个连续任务执行（引擎驱动循环）。
-
-        每轮: 截图 → 发消息（上一步结果 + 执行记录 + 当前屏幕 + 完整用例目标） → LLM 出动作 → 执行 → 循环
-        返回: {
-            "status": "completed" | "failed" | "error",
-            "iterations": int,
-            "summary": str,      # finish_case 总结 / 失败原因 / 错误信息
-            "progress": list[str]  # LLM 通过 mark_progress 声明的已完成目标
-        }
-        """
-        # 用例开始：引擎自动截图
         try:
-            self.screen_box.perceive()
-            screen_text = self._current_screen_text()
+            new_summary = str(self.llm.invoke(prompt).content).strip()
         except Exception as e:
-            print(f"  错误: 截图失败: {e}")
-            return {"status": "error", "iterations": 0,
-                    "summary": f"截图失败: {e}", "progress": []}
+            print(f"  摘要生成失败，保留原文: {e}")
+            return False
+        del messages[start:end]
+        for i in range(len(messages) - 1, 0, -1):
+            if isinstance(messages[i], SystemMessage):
+                del messages[i]
+        insert_at = 1 if messages and isinstance(messages[0], SystemMessage) else 0
+        messages.insert(insert_at, SystemMessage(content=new_summary))
+        return True
 
-        progress: list[str] = []
-        last_result = "（用例刚开始，尚未执行任何操作）"
+    def _build_system_prompt(self, title: str, steps: list[str],
+                             checkpoints: list[str]) -> str:
+        base = _load_system_prompt(self.memory)
+        if not (steps or checkpoints):
+            return base
+        return "\n\n".join([
+            base,
+            "## 当前用例\n"
+            f"标题: {title}\n"
+            "步骤:\n" + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
+            + "\n检查点:\n" + "\n".join(f"{i + 1}. {r}" for i, r in enumerate(checkpoints)),
+        ])
+
+    def _run_loop(self, title: str, steps: list[str], checkpoints: list[str]) -> dict:
         iterations = 0
-        max_iter = self.config.max_iterations_per_case
+        messages: list = [SystemMessage(
+            content=self._build_system_prompt(title, steps, checkpoints))]
 
-        while iterations < max_iter:
+        while iterations < self.config.max_iterations_per_case:
             iterations += 1
-            msg = self._build_case_message(
-                title, original_steps, expected_results,
-                progress, last_result, screen_text,
-            )
-
             try:
-                ai_msg = self._llm_tools.invoke([HumanMessage(content=msg)])
+                self.screen.perceive()
             except Exception as e:
-                print(f"  错误: LLM 调用失败: {e}")
                 return {"status": "error", "iterations": iterations,
-                        "summary": str(e), "progress": progress}
+                        "summary": f"截图失败: {e}"}
 
-            tool_calls = getattr(ai_msg, "tool_calls", None) or []
-            if not tool_calls:
-                content = str(getattr(ai_msg, "content", "") or "")
-                print(f"  第 {iterations} 轮: 模型未调用工具，输出: {content[:120]!r}")
-                last_result = f"模型未调用任何工具，直接输出: {content[:200]}"
-                continue
+            for message in messages:
+                if isinstance(message, HumanMessage) and isinstance(message.content, list):
+                    message.content = [
+                        b for b in message.content
+                        if not (isinstance(b, dict) and b.get("type") == "image_url")
+                    ]
 
-            # 一次只执行一个动作
-            tc = tool_calls[0]
-            name, args = tc["name"], tc.get("args") or {}
-            print(f"  第 {iterations} 轮: 调用 {name}({args})")
+            user_message = HumanMessage(content=self._build_user_prompt())
+            user_message.additional_kwargs["round_observe"] = True
+            messages.append(user_message)
 
-            if name == "mark_progress":
-                # 声明完成一个目标：追加执行记录，屏幕不变，继续循环
-                summary = str(args.get("summary") or "").strip() or "（未说明）"
-                progress.append(summary)
-                result = f"目标已记录: {summary}"
-                print(f"  → {result}")
-                last_result = result
-                continue
-
-            if name == "finish_case":
-                # 声明整个用例完成
-                summary = str(args.get("summary") or "").strip() or "（未说明）"
-                print(f"  → 用例完成: {summary}")
-                return {"status": "completed", "iterations": iterations,
-                        "summary": summary, "progress": progress}
-
-            if name == "report_failure":
-                # 声明无法完成，整个用例中止
-                reason = str(args.get("reason") or "").strip() or "（未说明）"
-                print(f"  → 用例失败: {reason}")
-                return {"status": "failed", "iterations": iterations,
-                        "summary": reason, "progress": progress}
-
-            result = self._invoke_tool(name, args)
-            print(f"  → {str(result)[:120]}")
-
-            if name in UI_ACTIONS:
-                # UI 动作执行后：自动重新截图，把新屏幕带入下一轮
+            response = None
+            for attempt in range(3):
                 try:
-                    self.screen_box.perceive()
-                    screen_text = self._current_screen_text()
+                    response = self._llm_tools.invoke(messages)
+                    break
                 except Exception as e:
-                    screen_text = f"（重新截图失败: {e}）"
-                last_result = f"执行 {name}({args})\n结果: {result}"
-            else:
-                # 查询类动作：屏幕未变化，只更新结果
-                last_result = f"调用 {name}({args})\n结果: {result}"
+                    if attempt == 2:
+                        return {"status": "error", "iterations": iterations,
+                                "summary": str(e)}
+                    print(f"  LLM 调用失败，{2 ** (attempt + 1)} 秒后重试: {e}")
+                    time.sleep(2 ** (attempt + 1))
 
-        print(f"  结果: 失败（超过 {max_iter} 轮仍未完成）")
+            messages.append(response)
+            tool_calls = getattr(response, "tool_calls", None) or []
+
+            for tool in tool_calls:
+                name, args = tool["name"], tool.get("args") or {}
+
+                if name in DECLARE_ACTIONS:
+                    key = "summary" if name == "finish_case" else "reason"
+                    text = str(args.get(key) or "").strip() or "（未说明）"
+                    return {"status": "completed" if name == "finish_case" else "failed",
+                            "iterations": iterations, "summary": text}
+
+                result = self._invoke_tool(name, args)
+                messages.append(ToolMessage(
+                    content=str(result), tool_call_id=tool.get("id") or ""))
+
+            bounds = self._round_bounds(messages)
+            if len(bounds) > SUMMARY_WINDOW:
+                self._summarize_old_rounds(messages, bounds, SUMMARY_BATCH)
+
         return {"status": "failed", "iterations": iterations,
-                "summary": f"超过 {max_iter} 轮仍未完成", "progress": progress}
+                "summary": f"超过 {self.config.max_iterations_per_case} 轮仍未完成"}
 
-    # ── 完整流程 ────────────────────────────────────────
-
-    def resolve_and_run(self, title: str, original_steps: list[str],
-                        expected_results: list[str]) -> dict:
-        """
-        连续执行整个用例（不按步骤编号逐条驱动，进度由 LLM 声明 + 执行记录回显）。
-
-        返回: {
-            "status": str,
-            "progress": list[str],   # 声明的已完成目标
-            "summary": str,          # 完成总结 / 失败原因
-            "iterations": int,
-            "memory_updated": bool,
-        }
-        """
-        print(f"\n[Agent] === 开始执行 ===")
-        result = self._run_case(title, original_steps, expected_results)
+    def run_case(self, title: str, steps: list[str], checkpoints: list[str]) -> dict:
+        result = self._run_loop(title, steps, checkpoints)
 
         status = result["status"]
-        progress = result.get("progress") or []
         summary = result.get("summary") or ""
 
         print(f"\n执行轮数: {result.get('iterations', 0)}")
-        if progress:
-            print("已完成目标:")
-            for i, p in enumerate(progress, 1):
-                print(f"  {i}. {p}")
         print(f"结果: {status}")
-        if summary:
-            print(f"总结: {summary}")
 
-        # 沉淀特性知识（LLM 归类：该经验属于哪个应用/特性/场景）
         memory_updated = False
         if status == "completed":
             feature_id = self.knowledge.learn_from_execution(
-                title, original_steps, expected_results, result
+                title, steps, checkpoints, result
             )
             memory_updated = feature_id is not None
 
         return {
             "status": status,
-            "progress": progress,
             "summary": summary,
             "iterations": result.get("iterations", 0),
             "memory_updated": memory_updated,
         }
 
-    def run_interactive(self, title: str, original_steps: list[str],
-                        expected_results: list[str]):
-        """
-        交互式运行（逐步输出到控制台）。
+    def run_interactive(self, title: str, steps: list[str],
+                        checkpoints: list[str]):
+        result = self.run_case(title, steps, checkpoints)
 
-        适合 CLI 聊天模式。
-        """
-        result = self.resolve_and_run(title, original_steps, expected_results)
-
-        print(f"\n{'='*50}")
+        print(f"\n{'=' * 50}")
         print(f"执行完成: {result['status']}（{result.get('iterations', 0)} 轮）")
-        for i, p in enumerate(result.get("progress") or [], 1):
-            print(f"  ✓ {p}")
         if result.get("summary"):
             print(f"总结: {result['summary']}")
         print(f"记忆更新: {'是' if result['memory_updated'] else '否'}")
-        print(f"{'='*50}")
+        print(f"{'=' * 50}")

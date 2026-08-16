@@ -11,19 +11,19 @@ from typing import Optional
 class AgentConfig:
     """Agent 运行时配置。"""
 
-    # LLM 配置
+    
     llm_model: str = "deepseek-v4-flash"
     llm_base_url: str = "https://api.deepseek.com/v1"
     llm_api_key: str = ""
 
-    # 执行引擎配置
-    max_iterations_per_case: int = 60  # 整个用例的最大循环轮数
-    screenshot_target_width: int = 720  # 缩放到此宽度
-    memory_dir: str = ""  # 记忆存储目录（空表示使用默认）
+    
+    max_iterations_per_case: int = 60  
+    screenshot_target_width: int = 720  
+    memory_dir: str = ""  
 
-    # 设备配置（stub）
+    
     device_serial: str = ""
-    device_resolution: tuple[int, int] = (1080, 2400)  # 默认分辨率
+    device_resolution: tuple[int, int] = (1080, 2400)  
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
