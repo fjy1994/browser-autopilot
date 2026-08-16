@@ -10,42 +10,42 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-# ── 类型别名（保持外部 import 兼容） ──────────────────────
 
-# 页面文档
-#   {
-#     "name": str,             # 页面名（Markdown 标题）
-#     "app": str,              # 所属应用目录名
-#     "description": str,      # 页面描述
-#     "signature": str,        # 规范化签名 "type|id; type|id"
-#     "elements": {            # 元素经验：id -> 经验
-#         resource_id: {
-#             "type": str, "action": str,
-#             "leads_to": str,   # 目标页面标识，如 "weather_app/city_search.md"
-#             "note": str,
-#         }
-#     },
-#   }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 PageCluster = dict
 
-# 特性文档
-#   {
-#     "name": str,               # 特性名（Markdown 标题），如 "清理缓存"
-#     "app": str,                # 所属应用目录名，如 "浏览器"
-#     "summary": str,            # 特性概述
-#     "entries": list[str],      # 入口（进入该功能的操作路径）
-#     "preconditions": list[str],# 前置操作（执行前需要满足的条件）
-#     "scenarios": [             # 场景列表（核心单元）
-#       {"name": str,            #   场景名，如 "清理浏览数据"
-#        "steps": list[str],     #   操作步骤（已验证）
-#        "verifications": list[str]},  # 验证要点
-#     ],
-#     "updated_at": str,         # 最后更新时间
-#   }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 FeatureDoc = dict
 
-# 跳转图
-#   {page_id: {"from": list[str], "to": list[str]}}
+
+
 JumpGraph = dict
 
 
@@ -57,7 +57,7 @@ def _clean_line(s: str) -> str:
     return s.strip().strip("`").strip()
 
 
-# ── 页面文档 ──────────────────────────────────────────────
+
 
 def render_page_doc(doc: dict) -> str:
     """把页面文档渲染为 Markdown。"""
@@ -69,7 +69,7 @@ def render_page_doc(doc: dict) -> str:
         lines.append(f"> 页面描述: {doc['description']}")
     lines.append("")
 
-    # 签名表格
+    
     lines.append("## 签名")
     lines.append("")
     lines.append("| # | resource_id | type |")
@@ -80,7 +80,7 @@ def render_page_doc(doc: dict) -> str:
         lines.append(f"| {i} | {rid} | {type_name} |")
     lines.append("")
 
-    # 元素经验
+    
     lines.append("## 元素经验")
     lines.append("")
     elements = doc.get("elements") or {}
@@ -96,7 +96,7 @@ def render_page_doc(doc: dict) -> str:
             lines.append(f"- 说明: {ek['note']}")
         lines.append("")
 
-    # 跳转关系（从元素经验聚合，纯展示）
+    
     lines.append("## 跳转关系")
     lines.append("")
     targets: dict[str, list[str]] = {}
@@ -155,11 +155,11 @@ def parse_page_doc(text: str) -> dict:
             cur_rid = None
             continue
         elif line.startswith("## 跳转关系"):
-            section = "jump"  # 自动生成，不解析
+            section = "jump"  
             cur_rid = None
             continue
         elif line.startswith("### "):
-            # ### id (type)
+            
             header = line[4:].strip()
             m = re.match(r"^(.*?)\s*\(([^)]*)\)\s*$", header)
             if m:
@@ -176,7 +176,7 @@ def parse_page_doc(text: str) -> dict:
         if section == "signature" and line.startswith("|") and not line.startswith("|---") and not line.startswith("| #"):
             cells = [c.strip() for c in line.strip("|").split("|")]
             if len(cells) >= 3:
-                # 最后两列: resource_id | type
+                
                 rid, etype = cells[-2], cells[-1]
                 if rid and rid != "resource_id":
                     sig_parts.append(f"{etype}|{rid}")
@@ -198,7 +198,7 @@ def parse_page_doc(text: str) -> dict:
     return doc
 
 
-# ── 特性文档 ──────────────────────────────────────────────
+
 
 def parse_frontmatter(text: str) -> dict:
     """解析特性文件头部的 YAML frontmatter（轻量 meta）。
@@ -228,7 +228,7 @@ def parse_frontmatter(text: str) -> dict:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        # 列表项挂在当前 key 下
+        
         if stripped.startswith("- ") and current_key:
             meta.setdefault(current_key, []).append(_clean_line(stripped[2:]))
             continue
@@ -270,13 +270,13 @@ def render_feature_doc(doc: dict) -> str:
         lines.append(f"> 更新: {doc['updated_at']}")
     lines.append("")
 
-    # 概述
+    
     lines.append("## 概述")
     lines.append("")
     lines.append(doc.get("summary") or "（暂无概述）")
     lines.append("")
 
-    # 入口
+    
     lines.append("## 入口")
     lines.append("")
     entries = doc.get("entries") or []
@@ -287,7 +287,7 @@ def render_feature_doc(doc: dict) -> str:
         lines.append("（暂无入口信息）")
     lines.append("")
 
-    # 前置操作
+    
     lines.append("## 前置操作")
     lines.append("")
     pre = doc.get("preconditions") or []
@@ -298,7 +298,7 @@ def render_feature_doc(doc: dict) -> str:
         lines.append("（暂无前置条件）")
     lines.append("")
 
-    # 场景
+    
     scenarios = doc.get("scenarios") or []
     if not scenarios:
         lines.append("## 场景")
@@ -345,9 +345,9 @@ def parse_feature_doc(text: str) -> dict:
         return doc
 
     lines = text.splitlines()
-    section = ""            # summary / entries / preconditions / scenario / ""
+    section = ""            
     cur_scenario: dict | None = None
-    sub_section = ""        # steps / verifications
+    sub_section = ""        
 
     def _flush_scenario() -> None:
         nonlocal cur_scenario
@@ -419,7 +419,7 @@ def parse_feature_doc(text: str) -> dict:
     return doc
 
 
-# ── 兼容辅助 ──────────────────────────────────────────────
+
 
 def empty_feature_doc(name: str, app: str) -> FeatureDoc:
     """创建一个空的特性文档骨架。"""

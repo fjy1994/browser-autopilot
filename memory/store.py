@@ -79,7 +79,7 @@ class MemoryStore:
     def __init__(self, data_dir: str | None = None, app_name: str = ""):
         if data_dir:
             base = Path(data_dir).expanduser().resolve()
-            # 若传入的是通用 data 目录，则在其下建 memory/ 子目录
+            
             if base.name.lower() != "memory":
                 base = base / "memory"
         else:
@@ -88,23 +88,23 @@ class MemoryStore:
         self.pages_root = base / "pages"
         self.features_root = base / "features"
         self.app_name = app_name
-        self._sig_index: dict[str, str] | None = None  # signature -> page_id
+        self._sig_index: dict[str, str] | None = None  
 
         self.pages_root.mkdir(parents=True, exist_ok=True)
         self.features_root.mkdir(parents=True, exist_ok=True)
         self._ensure_readme()
 
-    # ── 路径工具 ──────────────────────────────────────────
+    
 
     def _page_abs(self, page_id: str) -> Path:
-        # 防止路径逃逸
+        
         rel = Path(page_id)
         if rel.is_absolute() or ".." in rel.parts:
             raise ValueError(f"非法页面标识: {page_id!r}")
         return self.pages_root / rel
 
     def _feature_abs(self, feature_id: str) -> Path:
-        # 防止路径逃逸
+        
         rel = Path(feature_id)
         if rel.is_absolute() or ".." in rel.parts:
             raise ValueError(f"非法特性标识: {feature_id!r}")
@@ -120,7 +120,7 @@ class MemoryStore:
             p for p in self.features_root.rglob("*.md") if p.is_file()
         )
 
-    # ── 签名索引 ──────────────────────────────────────────
+    
 
     def _rebuild_index(self) -> dict[str, str]:
         index: dict[str, str] = {}
@@ -143,11 +143,11 @@ class MemoryStore:
         hit = self._sig_index.get(sig)
         if hit is not None:
             return hit
-        # 索引陈旧（外部手工编辑过）时重建一次再查
+        
         self._rebuild_index()
         return self._sig_index.get(sig)
 
-    # ── 页面读写 ──────────────────────────────────────────
+    
 
     def _read_page(self, page_id: str) -> dict:
         p = self._page_abs(page_id)
@@ -160,7 +160,7 @@ class MemoryStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(render_page_doc(doc), encoding="utf-8")
 
-    # ── 特性读写 ──────────────────────────────────────────
+    
 
     def _read_feature(self, feature_id: str) -> dict:
         p = self._feature_abs(feature_id)
@@ -180,7 +180,7 @@ class MemoryStore:
             return ""
         return p.read_text(encoding="utf-8")
 
-    # ── 查询 ──────────────────────────────────────────────
+    
 
     def query(self, ui_tree: dict, app_version: str = "", valid_region: dict | None = None) -> dict:
         """
@@ -222,7 +222,7 @@ class MemoryStore:
             "elements": elements,
         }
 
-    # ── 学习 ──────────────────────────────────────────────
+    
 
     def learn(
         self,
@@ -258,7 +258,7 @@ class MemoryStore:
                 "elements": {},
             }
 
-        # 合并元素经验（只覆盖非空字段，保留既有信息）
+        
         for rid, ek in (explored_elements or {}).items():
             rid = str(rid).strip()
             if not rid:
@@ -300,7 +300,7 @@ class MemoryStore:
             n += 1
         return candidate
 
-    # ── 特性知识 ──────────────────────────────────────────
+    
 
     def learn_feature(self, doc: dict) -> str:
         """
@@ -338,7 +338,7 @@ class MemoryStore:
                     base.append(item)
             out[key] = base
 
-        # 场景按名称合并
+        
         scenarios = {sc.get("name"): sc for sc in (out.get("scenarios") or []) if sc.get("name")}
         for sc in incoming.get("scenarios") or []:
             name = sc.get("name")
@@ -352,7 +352,7 @@ class MemoryStore:
                     "verifications": [v for v in sc.get("verifications") or [] if str(v).strip()],
                 }
                 continue
-            # 合并步骤/验证（去重，新内容覆盖）
+            
             steps = [s for s in prev.get("steps") or [] if str(s).strip()]
             for s in sc.get("steps") or []:
                 s = str(s).strip()
@@ -367,7 +367,7 @@ class MemoryStore:
         out["scenarios"] = list(scenarios.values())
         return out
 
-    # ── 特性知识检索（SKILL 式 meta 检索） ────────────────
+    
 
     def list_feature_meta(self) -> list[dict]:
         """
@@ -384,7 +384,7 @@ class MemoryStore:
                 continue
             meta = parse_frontmatter(text)
             if not meta.get("name"):
-                # 兼容无 frontmatter 的旧文件/手写文件：正文解析取轻量字段
+                
                 try:
                     doc = parse_feature_doc(text)
                 except Exception:
@@ -423,7 +423,7 @@ class MemoryStore:
             })
         return out
 
-    # ── 跳转图总览 ────────────────────────────────────────
+    
 
     def build_jump_graph(self) -> dict:
         """扫描全部页面文件，聚合跳转关系。"""
@@ -472,7 +472,7 @@ class MemoryStore:
     def _refresh_jump_graph(self) -> None:
         (self.root / "JUMP_GRAPH.md").write_text(self._render_jump_graph(), encoding="utf-8")
 
-    # ── 维护 ──────────────────────────────────────────────
+    
 
     def _ensure_readme(self) -> None:
         readme = self.root / "README.md"
@@ -484,7 +484,7 @@ class MemoryStore:
         """刷新跳转图总览。"""
         self._refresh_jump_graph()
 
-    # ── 查看 ──────────────────────────────────────────────
+    
 
     def list_pages(self) -> list[dict]:
         """列出全部页面：page_id / name / app / description / 元素数。"""
@@ -598,7 +598,7 @@ Markdown 纯文本，人和 LLM 都可以直接阅读、修改、删除。
 - 系统重启/首次查询时会自动扫描重建签名索引，手工改动无需额外操作。
 """
 
-# ── 顶层便捷函数 ─────────────────────────────────────────
+
 
 def open_memory(data_dir: str | None = None) -> MemoryStore:
     return MemoryStore(data_dir=data_dir)
